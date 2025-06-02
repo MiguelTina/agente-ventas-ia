@@ -75,15 +75,3 @@ Desarrollado por [Mau] con apoyo de IA para acelerar el desarrollo de soluciones
 
 🧠 ¿Preguntas o mejoras?
 ¡Cualquier PR o sugerencia es bienvenida! Este bot de ventas está en evolución constante para integrarse con plataformas reales como WhatsApp y automatizadores como n8n.
-
-
----
-
-4. Guarda el archivo (`Ctrl+S`).
-5. Súbelo con:
-
-```bash
-git add README.md
-git commit -m "Agregar documentación del proyecto"
-git push origin main
-
