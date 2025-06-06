@@ -5,6 +5,9 @@ import json
 from pymongo import MongoClient
 from bson import ObjectId
 from datetime import datetime
+from fpdf import FPDF
+from rag_gpt import interpretar_mensaje,responder_gpt
+import uuid
 import os
 
 carrito = []
@@ -14,21 +17,20 @@ load_dotenv()
 
 app = FastAPI()
 
+from routes.rag import router as rag_router
+app.include_router(rag_router)
+
 # Conexión a MongoDB
 MONGO_URI = os.getenv("MONGO_URI")
-cliente = MongoClient(MONGO_URI)
+cliente = MongoClient(MONGO_URI, tls=True, tlsAllowInvalidCertificates=True)
 db = cliente["agente_ventas"]  # Nombre de tu base de datos
 coleccion_productos = db["productos"]  # Colección para los productos
 coleccion_cotizaciones = db["cotizaciones"]
-
-from fastapi.responses import JSONResponse
 
 @app.get("/productos")
 def obtener_productos():
     productos = list(coleccion_productos.find({}, {"_id": 0}))
     return JSONResponse(content=productos)
-
-from fastapi import Query
 
 @app.get("/buscar")
 def buscar_producto(nombre: str = Query(..., description="Nombre del producto a buscar")):
@@ -52,8 +54,6 @@ def buscar_por_categoria(nombre: str = Query(..., description="Nombre exacto de 
         return {"resultados": resultados}
     else:
         return {"mensaje": f"No se encontraron productos en la categoría '{nombre}'."}
-
-from fastapi import Body
 
 @app.post("/agregar-al-carrito")
 def agregar_al_carrito(nombre: str = Body(..., embed=True)):
@@ -93,11 +93,108 @@ def vaciar_carrito():
 
 @app.get("/")
 def read_root():
-    return {"mensaje": "¡El agente de ventas IA está activo!"}  
+    return {"mensaje": "¡El agente de ventas IA está activo!"} 
 
-from datetime import datetime
+def generar_pdf_cotizacion(cotizacion: dict) -> str:
+    
+    class PDF(FPDF):
+        def header(self):
+            self.image("Logo Ganesha.png", x=10, y=8, w=30)
+            self.set_font("Arial", "B", 14)
+            self.cell(0, 10, "COTIZACIÓN", border=0, ln=True, align="C")
+            self.ln(10)
 
-from bson import ObjectId  # ⬅️ Asegúrate de importar esto arriba
+        def footer(self):
+            self.set_y(-15)
+            self.set_font("Arial", "I", 8)
+            self.cell(0, 10, "Página " + str(self.page_no()), align="C")
+
+    os.makedirs("pdfs", exist_ok=True)
+    pdf = PDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    fecha = cotizacion.get("fecha", datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
+    numero = cotizacion.get("_id", "S/N")
+
+    # Encabezado
+    pdf.set_font("Arial", size=12)
+    pdf.cell(0, 10, f"Fecha de cotización: {fecha}", ln=True)
+    pdf.cell(0, 10, f"Número de cotización: {numero}", ln=True)
+    pdf.ln(5)
+
+    # Remitente
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(0, 10, "Remitente:", ln=True)
+    pdf.set_font("Arial", size=12)
+    pdf.multi_cell(0, 8,
+        "Juan Carlos Gomez Estrada\n"
+        "Miguel de Cervantes Saavedra #328 Col. El Salto\n"
+        "37428 León, Gua\n"
+        "RFC: GOEJ890906NR0\n"
+        "Tel: 14774761092\n"
+        "Correo: mostrador@prisaleon.com.mx"
+    )
+    pdf.ln(10)
+
+    # Cliente
+    cliente = cotizacion.get("cliente", {})
+
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(0, 10, "Cliente:", ln=True)
+    pdf.set_font("Arial", size=12)
+    pdf.multi_cell(0, 8,
+    f"{cliente.get('nombre', '')}\n"
+    f"{cliente.get('direccion', '')}\n"
+    f"{cliente.get('cp', '')} {cliente.get('ciudad', '')}, {cliente.get('estado', '')}\n"
+    f"RFC: {cliente.get('rfc', '')}\n"
+    f"Correo: {cliente.get('correo', '')}\n"
+    f"Tel: {cliente.get('telefono', '')}"
+)
+    pdf.ln(10)
+
+
+    # Tabla de productos
+    productos = cotizacion.get("productos", [])
+    pdf.set_font("Arial", "B", 11)
+    pdf.set_fill_color(220, 220, 220)
+    pdf.cell(80, 10, "DESCRIPCIÓN", 1, 0, "C", True)
+    pdf.cell(30, 10, "PRECIO", 1, 0, "C", True)
+    pdf.cell(30, 10, "IVA", 1, 0, "C", True)
+    pdf.cell(30, 10, "TOTAL", 1, 1, "C", True)
+
+    pdf.set_font("Arial", size=10)
+    subtotal = 0
+    iva_total = 0
+
+    for p in productos:
+        nombre = p["nombre"]
+        precio = p["precio"]
+        iva = precio * 0.16
+        total = precio + iva
+
+        pdf.cell(80, 10, nombre[:40], 1)
+        pdf.cell(30, 10, f"${precio:.2f}", 1, 0, "R")
+        pdf.cell(30, 10, "16%", 1, 0, "C")
+        pdf.cell(30, 10, f"${total:.2f}", 1, 1, "R")
+
+        subtotal += precio
+        iva_total += iva
+
+    # Totales
+    pdf.ln(5)
+    pdf.set_font("Arial", "B", 11)
+    pdf.cell(140, 10, "Importe sin impuestos:", 0, 0, "R")
+    pdf.cell(30, 10, f"${subtotal:.2f}", 0, 1, "R")
+    pdf.cell(140, 10, "IVA (16%):", 0, 0, "R")
+    pdf.cell(30, 10, f"${iva_total:.2f}", 0, 1, "R")
+    pdf.cell(140, 10, "Total:", 0, 0, "R")
+    pdf.cell(30, 10, f"${subtotal + iva_total:.2f}", 0, 1, "R")
+
+    # Guardar PDF
+    filename = f"cotizacion_{uuid.uuid4().hex[:8]}.pdf"
+    pdf.output(f"pdfs/{filename}")
+    return filename
 
 @app.post("/finalizar-compra")
 def finalizar_compra():
@@ -108,8 +205,20 @@ def finalizar_compra():
         total = sum(producto["precio"] for producto in carrito)
         fecha = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
+        cliente = {
+    "nombre": "Luis Torres",
+    "direccion": "Av. Insurgentes 123, Col. Centro",
+    "cp": "37000",
+    "ciudad": "León",
+    "estado": "Guanajuato",
+    "rfc": "TORL850102ABC",
+    "correo": "luis@email.com",
+    "telefono": "4771234567"
+}
+
         cotizacion = {
             "fecha": fecha,
+            "cliente": cliente,
             "productos": [producto.copy() for producto in carrito],
             "total": round(total, 2)
         }
@@ -117,10 +226,15 @@ def finalizar_compra():
         resultado = coleccion_cotizaciones.insert_one(cotizacion)
         cotizacion["_id"] = str(resultado.inserted_id)
 
+        # ✅ Aquí generamos el PDF
+        filename = generar_pdf_cotizacion(cotizacion)
+
         carrito.clear()
 
         return {
-            "mensaje": f"🧾 Cotización generada el {fecha} por ${total:.2f} y guardada exitosamente.",
+            "mensaje": f"Cotización generada el {fecha} por ${total:.2f} y guardada exitosamente.",
+            "archivo_pdf": filename,
+            "descarga_pdf": f"/descargar-pdf/{filename}",
             "id_cotizacion": cotizacion["_id"],
             "cotizacion": cotizacion
         }
@@ -130,7 +244,42 @@ def finalizar_compra():
             status_code=500,
             content={"error": str(e)}
         )
+    
+@app.get("/descargar-pdf/{filename}")
+def descargar_pdf(filename: str):
+    path = f"pdfs/{filename}"
+    if not os.path.exists(path):
+        return JSONResponse(status_code=404, content={"error": "Archivo no encontrado"})
+    return FileResponse(path, media_type="application/pdf", filename=filename)
 
+@app.post("/cotizar-directo")
+def cotizar_directo(datos: dict):
+    cliente = datos.get("cliente", {})
+    productos = datos.get("productos", [])
+
+    total = sum(p["precio"] for p in productos)
+    fecha = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+
+    cotizacion = {
+        "fecha": fecha,
+        "cliente": cliente,
+        "productos": productos,
+        "total": round(total, 2)
+    }
+
+    resultado = coleccion_cotizaciones.insert_one(cotizacion)
+    cotizacion["_id"] = str(resultado.inserted_id)
+
+    filename = generar_pdf_cotizacion(cotizacion)
+
+    return {
+        "mensaje": f"Cotización generada el {fecha} por ${total:.2f}",
+        "archivo_pdf": filename,
+        "descarga_pdf": f"/descargar-pdf/{filename}",
+        "id_cotizacion": cotizacion["_id"],
+        "cotizacion": cotizacion
+    }
+   
 @app.on_event("startup")
 def cargar_productos():
     with open("catalogo.json", "r", encoding="utf-8") as archivo:
@@ -141,6 +290,11 @@ def cargar_productos():
         print("✅ Productos cargados exitosamente en MongoDB")
     else:
         print("📦 Los productos ya están en la base de datos")
+
+@app.post("/gpt-asistente")
+def asistente_gpt(pregunta: str = Body(..., embed=True)):
+    respuesta = responder_gpt(pregunta)
+    return {"respuesta": respuesta}
 
 @app.get("/cotizaciones")
 def obtener_cotizaciones():
@@ -179,7 +333,10 @@ def obtener_cotizaciones_por_fecha(
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
     
-    from fastapi import Query
+@app.post("/gpt-asistente")
+def gpt_asistente(pregunta: str = Body(..., embed=True)):
+    respuesta = responder_gpt(pregunta)
+    return {"respuesta": respuesta}
 
 @app.get("/cotizaciones/buscar")
 def buscar_cotizaciones_por_palabra(palabra: str = Query(..., description="Palabra clave para buscar en productos")):
@@ -227,8 +384,6 @@ def obtener_historial():
         historial.append(resumen)
     return JSONResponse(content={"historial": historial})
 
-from fastapi import Query
-
 @app.get("/ultima-cotizacion")
 def obtener_ultima_cotizacion():
     try:
@@ -248,25 +403,5 @@ def obtener_ultima_cotizacion():
     from fpdf import FPDF
 import uuid
 
-def generar_pdf_cotizacion(cotizacion: dict) -> str:
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
-
-    pdf.set_title("Cotización")
-
-    pdf.cell(200, 10, txt="🧾 Cotización de Productos", ln=True, align='C')
-    pdf.cell(200, 10, txt=f"Fecha: {cotizacion.get('fecha', 'Sin fecha')}", ln=True)
-
-    pdf.ln(10)
-    for producto in cotizacion.get("productos", []):
-        pdf.cell(200, 10, txt=f"- {producto['nombre']} (${producto['precio']})", ln=True)
-
-    pdf.ln(5)
-    pdf.cell(200, 10, txt=f"Total: ${cotizacion.get('total', 0)}", ln=True)
-
-    # Guardar el PDF con nombre único
-    filename = f"cotizacion_{uuid.uuid4().hex[:8]}.pdf"
-    pdf.output(filename)
-
-    return filename
+for route in app.routes:
+    print(f"🔍 Ruta cargada: {route.path} - {route.methods}")
