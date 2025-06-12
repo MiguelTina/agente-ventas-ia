@@ -1,0 +1,16 @@
+[
+  {
+    "id": 1,
+    "nombre": "Impermeabilizante Acrílico 19L",
+    "categoria": "impermeabilizantes",
+    "precio": 850.00,
+    "caracteristicas": "Ideal para climas cálidos, resistente a rayos UV. Duración de 5 años."
+  },
+  {
+    "id": 2,
+    "nombre": "Pintura Vinílica Blanca 19L",
+    "categoria": "pinturas",
+    "precio": 520.00,
+    "caracteristicas": "Excelente cobertura y acabado mate para interiores."
+  }
+]
